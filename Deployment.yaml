@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mindbox
+  labels:
+    app: mindbox
+spec:
+  selector:
+    matchLabels:
+      app: deniyd
+      replicas: 4 # 4 пода справляются с пиковой нагрузкой
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: mindbox
+        app: mindbox
+      annotations:
+        scale-down-enabled: 'true'
+    spec:
+      containers:
+        - name: denyid
+          image: kube-apiserver
+          imagePullPolicy: IfNotPresent
+          livenessProbe: # 5-10 секунд для инициализации,с 5-ти секундной задержкой 
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: 128Mi # заданные 128 Mb 
+              cpu: 100m # заданные 0.1 CPU
+            limits:
+              memory: 150Mi
+              cpu: '1' # т.к на первые запросы необходимо больше ресурсов
+      affinity:
+        podAntiAffinity: 
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - mindbox
+                topologyKey: failure-domain.beta.kubernetes.io/region=us-east-1 #мультизонный кластер
+
+#Для минимального потребления ресурсов можно использовать HorizontalPodAutoscaler
+ApiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mindbox
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mindbox
+  minReplicas: 1 # 1 под справится с ночной нагрузкой (Можно указать 2, для более уверенной работы) 
+  maxReplicas: 4 # Пиковая нагрузка проиходится на день
+  metrics:
+    - type: Resource #Оптимизация используемых ресурсов
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: AverageValue
+          averageValue: 128Mi
+
+# Для максимальной оптимизации работы и распределения нагрузки на циклы дня и ночи можно использовать Cronjob
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daytime # расписание на день включается в 12 
+spec:
+  schedule: "0 12 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: daytime
+            image: busybox:1.28
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - kubectl scale --replicas=4 deployment/mindbox # Так как пик днем - указываем максимальное количество подов, в связи с пиковой нагрузкой
+          restartPolicy: OnFailure # отказоустойчивость в случае провала
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightime # расписание на ночь включается в 00 
+spec:
+  schedule: "0 0 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: nightime
+            image: busybox:1.28
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - kubectl scale --replicas=1 deployment/mindBox # Минимум подов ночью из-за низкой нагрузки (можно указать 2, для более уверенной работы)
+          restartPolicy: OnFailure # отказоустойчивость в случае провала
+
+
+#Список всей используемой литературы
+# https://kubernetes.io/docs/concepts/containers/images/
+# https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/
+# https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+# https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/
+# https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/
+# https://kubernetes.io/docs/concepts/configuration/overview/
+# https://kubernetes.io/docs/concepts/overview/kubernetes-api/
+# https://kubernetes.io/ru/docs/concepts/overview/working-with-objects/kubernetes-objects/#%D0%BE%D0%BF%D0%B8%D1%81%D0%B0%D0%BD%D0%B8%D0%B5-%D0%BE%D0%B1%D1%8A%D0%B5%D0%BA%D1%82%D0%B0-kubernetes
+# https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/
+# https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/
+# https://kubernetes.io/docs/concepts/workloads/controllers/job/
